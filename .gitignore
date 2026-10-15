@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+.env
+
+# Datasets
+data/
+datasets/
+*.mp4
+*.avi
+*.tar
+*.zip
+
+# Model checkpoints
+checkpoints/
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+
+# Experiment outputs
+outputs/
+runs/
+logs/
+wandb/
+
+# IDE
+.vscode/
+.idea/
