@@ -1,0 +1,48 @@
+paths:
+  data_root: /data2/yhao/datasets/egoexo4d
+  output_root: /data2/yhao/outputs/ego_action_privacy
+  manifest_dir: /data2/yhao/outputs/ego_action_privacy/manifests
+  train_manifest: /data2/yhao/outputs/ego_action_privacy/manifests/keystep_train.json
+  val_manifest: /data2/yhao/outputs/ego_action_privacy/manifests/keystep_val.json
+  class_map: /data2/yhao/outputs/ego_action_privacy/manifests/class_map.json
+  model_dir: /data2/yhao/models/InternVideo2-CLIP-1B
+  text_cache: /data2/yhao/outputs/ego_action_privacy/cache/keystep_665_text_features.pt
+
+data:
+  num_frames: 8
+  image_size: 224
+  batch_size: 1
+  num_workers: 4
+  allow_partial_data: false
+
+target:
+  name: InternVideo2-CLIP-1B-224p-f8
+  dtype: bfloat16
+  gradient_checkpointing: true
+  text_batch_size: 2
+
+generator:
+  temporal_mode: 3d
+  base_channels: 32
+  epsilon_255: 8.0
+
+loss:
+  attack: 1.0
+  magnitude: 0.05
+  temporal: 0.1
+  spatial_tv: 0.0
+  margin: 0.0
+
+train:
+  seed: 0
+  epochs: 10
+  learning_rate: 0.0001
+  weight_decay: 0.00001
+  log_every: 10
+  checkpoint_every: 500
+  max_steps: null
+
+evaluation:
+  seed: 0
+  random_noise_seed: 20261015
+  example_videos: 4

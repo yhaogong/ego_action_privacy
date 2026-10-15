@@ -1,12 +1,16 @@
 # Python
 __pycache__/
-*.pyc
+*.py[cod]
+*.egg-info/
+.pytest_cache/
 .venv/
 .env
+build/
+dist/
 
 # Datasets
-data/
-datasets/
+/data/
+/datasets/
 *.mp4
 *.avi
 *.tar
@@ -24,6 +28,10 @@ outputs/
 runs/
 logs/
 wandb/
+
+# Local development helpers
+tests/
+scripts/
 
 # IDE
 .vscode/

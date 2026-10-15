@@ -1,0 +1,15 @@
+InternVideo2 SDPA adapter
+
+The vendor vision.py and pos_embed.py files are derived from OpenGVLab/InternVideo:
+https://github.com/OpenGVLab/InternVideo
+Commit: 3965eef16e2dadd0ea6c8d0cc29c8a3039df52e3
+Copyright (c) OpenGVLab. All rights reserved.
+The Apache-2.0 license is reproduced in LICENSE-InternVideo.
+
+Changes: replace explicit attention with PyTorch SDPA; remove external fused
+imports and timm utility imports; strict checkpoint initialization; enable
+non-reentrant gradient checkpointing. Runtime uses a standard tanh GELU MLP
+matching the official fused MLP activation setting.
+
+Adapter, diagnostics and tests added on 2026-10-15.
+No weights, videos, account credentials or tokens are included.
