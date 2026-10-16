@@ -13,7 +13,7 @@ from ego_action_privacy.config import load_config, set_seed, torch_dtype, write_
 from ego_action_privacy.data import EgoKeystepDataset, collate_samples
 from ego_action_privacy.losses import LossWeights, protection_loss
 from ego_action_privacy.system import ActionPrivacySystem
-from ego_action_privacy.targets import InternVideo2CLIP
+from ego_action_privacy.targets import InternVideo2CLIP, InternVideo2Classifier
 from ego_action_privacy.targets.text_cache import load_text_cache, read_class_map, save_text_cache
 from ego_action_privacy.training import (
     generator_from_config,
@@ -65,27 +65,53 @@ def main() -> None:
         collate_fn=collate_samples,
         persistent_workers=int(config["data"]["num_workers"]) > 0,
     )
-    cache_path = Path(config["paths"]["text_cache"])
-    cache_exists = cache_path.is_file()
-    target = InternVideo2CLIP(
-        config["paths"]["model_dir"],
-        device=args.device,
-        dtype=torch_dtype(config["target"]["dtype"]),
-        gradient_checkpointing=bool(config["target"]["gradient_checkpointing"]),
-        load_text_encoder=not cache_exists,
-    )
-    if cache_exists:
-        text_features = load_text_cache(cache_path, config["paths"]["class_map"])
-    else:
-        _, names = read_class_map(config["paths"]["class_map"])
-        text_features = target.encode_text(names, batch_size=int(config["target"]["text_batch_size"]))
-        save_text_cache(
-            cache_path,
-            text_features,
-            config["paths"]["class_map"],
-            metadata={"model": config["target"]["name"], "text_prefix": "summarize:", "max_tokens": 80},
+    target_kind = config["target"].get("kind", "zero_shot")
+    cache_path = None
+    text_features = None
+    if target_kind == "supervised":
+        raw_classes, _ = read_class_map(config["paths"]["class_map"])
+        target = InternVideo2Classifier(
+            config["paths"]["model_dir"],
+            len(raw_classes),
+            device=args.device,
+            parameter_dtype=torch_dtype(config["target"]["dtype"]),
+            gradient_checkpointing=bool(config["target"]["gradient_checkpointing"]),
+            head_dropout=0.0,
         )
-        target.release_text_encoder()
+        target.load_finetuned_checkpoint(
+            config["paths"]["recognizer_checkpoint"],
+            class_map_path=config["paths"]["class_map"],
+        )
+    elif target_kind == "zero_shot":
+        cache_path = Path(config["paths"]["text_cache"])
+        cache_exists = cache_path.is_file()
+        target = InternVideo2CLIP(
+            config["paths"]["model_dir"],
+            device=args.device,
+            dtype=torch_dtype(config["target"]["dtype"]),
+            gradient_checkpointing=bool(config["target"]["gradient_checkpointing"]),
+            load_text_encoder=not cache_exists,
+        )
+        if cache_exists:
+            text_features = load_text_cache(cache_path, config["paths"]["class_map"])
+        else:
+            _, names = read_class_map(config["paths"]["class_map"])
+            text_features = target.encode_text(
+                names, batch_size=int(config["target"]["text_batch_size"])
+            )
+            save_text_cache(
+                cache_path,
+                text_features,
+                config["paths"]["class_map"],
+                metadata={
+                    "model": config["target"]["name"],
+                    "text_prefix": "summarize:",
+                    "max_tokens": 80,
+                },
+            )
+            target.release_text_encoder()
+    else:
+        raise ValueError(f"Unsupported target kind: {target_kind!r}")
     resume_payload = None
     if args.resume:
         generator, resume_payload = load_generator_checkpoint(args.resume, args.device)
@@ -93,7 +119,9 @@ def main() -> None:
             raise ValueError("Resume checkpoint generator configuration differs from the requested config")
     else:
         generator = generator_from_config(config["generator"]).to(args.device)
-    system = ActionPrivacySystem(generator, target, text_features.to(args.device)).to(args.device)
+    if text_features is not None:
+        text_features = text_features.to(args.device)
+    system = ActionPrivacySystem(generator, target, text_features).to(args.device)
     optimizer = torch.optim.AdamW(
         generator.parameters(),
         lr=float(config["train"]["learning_rate"]),
@@ -112,8 +140,9 @@ def main() -> None:
         "config": config,
         "device": args.device,
         "resumed_from": str(Path(args.resume).resolve()) if args.resume else None,
+        "target_kind": target_kind,
         "target_load_report": target.load_report,
-        "text_cache": str(cache_path.resolve()),
+        "text_cache": str(cache_path.resolve()) if cache_path is not None else None,
     }
     write_json(run_dir / "status.json", status)
     log_path = run_dir / "train_metrics.jsonl"

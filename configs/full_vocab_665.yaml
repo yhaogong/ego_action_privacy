@@ -16,6 +16,7 @@ data:
   allow_partial_data: false
 
 target:
+  kind: zero_shot
   name: InternVideo2-CLIP-1B-224p-f8
   dtype: bfloat16
   gradient_checkpointing: true

@@ -7,6 +7,7 @@ paths:
   class_map: /data2/yhao/outputs/ego_action_privacy/official_278/manifests/class_map.json
   model_dir: /data2/yhao/models/InternVideo2-CLIP-1B
   text_cache: /data2/yhao/outputs/ego_action_privacy/official_278/cache/keystep_278_text_features.pt
+  recognizer_checkpoint: /data2/yhao/outputs/ego_action_privacy/official_278/runs/internvideo2_278_supervised/checkpoint_best.pt
 
 data:
   num_frames: 8
@@ -17,10 +18,10 @@ data:
   allow_partial_data: false
 
 target:
-  name: InternVideo2-CLIP-1B-224p-f8
+  kind: supervised
+  name: InternVideo2-CLIP-1B-224p-f8-supervised-278
   dtype: bfloat16
   gradient_checkpointing: true
-  text_batch_size: 2
 
 generator:
   temporal_mode: 3d

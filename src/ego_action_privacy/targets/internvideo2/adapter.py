@@ -418,6 +418,78 @@ class InternVideo2Classifier(nn.Module):
         self.classifier.weight.copy_(weights.to(self.classifier.weight))
         self.classifier.bias.zero_()
 
+    def load_finetuned_checkpoint(
+        self,
+        checkpoint_path: str | Path,
+        *,
+        class_map_path: str | Path | None = None,
+    ) -> dict:
+        """Strictly load a supervised checkpoint without changing model placement/dtype."""
+        path = Path(checkpoint_path).expanduser().resolve()
+        if not path.is_file():
+            raise FileNotFoundError(path)
+        checkpoint = torch.load(
+            path, map_location="cpu", weights_only=False, mmap=True
+        )
+        if not isinstance(checkpoint, Mapping) or checkpoint.get("schema_version") != 1:
+            raise ValueError(f"Unsupported recognizer checkpoint: {path}")
+        state = checkpoint.get("model")
+        config = checkpoint.get("config")
+        if not isinstance(state, Mapping) or not isinstance(config, Mapping):
+            raise ValueError("Recognizer checkpoint must contain model state and config")
+        try:
+            checkpoint_classes = int(config["data"]["num_classes"])
+        except (KeyError, TypeError, ValueError) as error:
+            raise ValueError("Recognizer checkpoint has no valid class count") from error
+        if checkpoint_classes != self.num_classes:
+            raise ValueError(
+                f"Recognizer checkpoint has {checkpoint_classes} classes, expected {self.num_classes}"
+            )
+        if class_map_path is not None:
+            try:
+                source_class_map = Path(config["paths"]["class_map"]).expanduser().resolve()
+            except (KeyError, TypeError) as error:
+                raise ValueError("Recognizer checkpoint has no class-map provenance") from error
+            requested_class_map = Path(class_map_path).expanduser().resolve()
+            if not source_class_map.is_file():
+                raise FileNotFoundError(source_class_map)
+            if not requested_class_map.is_file():
+                raise FileNotFoundError(requested_class_map)
+            if source_class_map.read_bytes() != requested_class_map.read_bytes():
+                raise ValueError(
+                    "Recognizer checkpoint class map differs from the requested class map"
+                )
+
+        expected = self.state_dict()
+        missing = sorted(set(expected) - set(state))
+        unexpected = sorted(set(state) - set(expected))
+        mismatches = [
+            (key, tuple(state[key].shape), tuple(expected[key].shape))
+            for key in expected.keys() & state.keys()
+            if state[key].shape != expected[key].shape
+        ]
+        if missing or unexpected or mismatches:
+            raise RuntimeError(
+                f"fine-tuned recognizer: missing={missing[:20]}, unexpected={unexpected[:20]}, "
+                f"shape_mismatches={mismatches[:10]}"
+            )
+        self.load_state_dict(state, strict=True)
+        validation = checkpoint.get("validation")
+        if not isinstance(validation, Mapping):
+            validation = {}
+        report = {
+            "path": str(path),
+            "loaded_keys": len(expected),
+            "epoch": int(checkpoint.get("epoch", -1)),
+            "global_step": int(checkpoint.get("global_step", -1)),
+            "num_classes": checkpoint_classes,
+            "validation": dict(validation),
+        }
+        self.load_report["fine_tuned_checkpoint"] = report
+        del checkpoint, state, expected
+        gc.collect()
+        return report
+
     def preprocess(self, video: torch.Tensor) -> torch.Tensor:
         if video.ndim != 5 or video.shape[1:3] != (self.num_frames, 3):
             raise ValueError(
@@ -450,4 +522,6 @@ class InternVideo2Classifier(nn.Module):
         return F.normalize(features.float(), dim=-1)
 
     def forward(self, video: torch.Tensor) -> torch.Tensor:
-        return self.classifier(self.head_dropout(self.encode_video(video)))
+        features = self.head_dropout(self.encode_video(video))
+        logits = self.classifier(features.to(self.classifier.weight.dtype))
+        return logits.float()

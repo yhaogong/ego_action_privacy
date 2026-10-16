@@ -15,7 +15,8 @@ from torch.utils.data import DataLoader
 from ego_action_privacy.config import load_config, set_seed, torch_dtype, write_json
 from ego_action_privacy.data import EgoKeystepDataset, collate_samples
 from ego_action_privacy.metrics import batch_psnr, batch_ssim, uniform_random_delta
-from ego_action_privacy.targets import InternVideo2CLIP
+from ego_action_privacy.system import freeze_target
+from ego_action_privacy.targets import InternVideo2CLIP, InternVideo2Classifier
 from ego_action_privacy.targets.text_cache import load_text_cache, read_class_map
 from ego_action_privacy.training import load_generator_checkpoint
 
@@ -126,14 +127,36 @@ def main() -> None:
         collate_fn=collate_samples,
         pin_memory=args.device.startswith("cuda"),
     )
-    text = load_text_cache(config["paths"]["text_cache"], config["paths"]["class_map"]).to(args.device)
-    target = InternVideo2CLIP(
-        config["paths"]["model_dir"],
-        device=args.device,
-        dtype=torch_dtype(config["target"]["dtype"]),
-        gradient_checkpointing=False,
-        load_text_encoder=False,
-    )
+    target_kind = config["target"].get("kind", "zero_shot")
+    text = None
+    if target_kind == "supervised":
+        raw_classes, _ = read_class_map(config["paths"]["class_map"])
+        target = InternVideo2Classifier(
+            config["paths"]["model_dir"],
+            len(raw_classes),
+            device=args.device,
+            parameter_dtype=torch_dtype(config["target"]["dtype"]),
+            gradient_checkpointing=False,
+            head_dropout=0.0,
+        )
+        target.load_finetuned_checkpoint(
+            config["paths"]["recognizer_checkpoint"],
+            class_map_path=config["paths"]["class_map"],
+        )
+    elif target_kind == "zero_shot":
+        text = load_text_cache(
+            config["paths"]["text_cache"], config["paths"]["class_map"]
+        ).to(args.device)
+        target = InternVideo2CLIP(
+            config["paths"]["model_dir"],
+            device=args.device,
+            dtype=torch_dtype(config["target"]["dtype"]),
+            gradient_checkpointing=False,
+            load_text_encoder=False,
+        )
+    else:
+        raise ValueError(f"Unsupported target kind: {target_kind!r}")
+    freeze_target(target)
     generator = None
     epsilon = float(config["generator"]["epsilon_255"]) / 255.0
     if args.checkpoint:
@@ -162,15 +185,23 @@ def main() -> None:
             clean = batch["video"].to(args.device, non_blocking=True)
             labels = batch["labels"].to(args.device, non_blocking=True)
             with torch.no_grad():
-                condition_logits = {"clean": target(clean, text)}
+                condition_logits = {
+                    "clean": target(clean) if text is None else target(clean, text)
+                }
                 condition_videos = {"clean": clean}
                 if generator is not None:
                     delta = generator(clean)
                     condition_videos["protected"] = (clean + delta).clamp(0, 1)
                     random_delta = uniform_random_delta(clean, epsilon, generator=random_generator)
                     condition_videos["random"] = (clean + random_delta).clamp(0, 1)
-                    condition_logits["protected"] = target(condition_videos["protected"], text)
-                    condition_logits["random"] = target(condition_videos["random"], text)
+                    condition_logits["protected"] = (
+                        target(condition_videos["protected"])
+                        if text is None else target(condition_videos["protected"], text)
+                    )
+                    condition_logits["random"] = (
+                        target(condition_videos["random"])
+                        if text is None else target(condition_videos["random"], text)
+                    )
             unseen_mask = torch.tensor([int(label) in unseen_indices for label in labels], device=labels.device)
             for name, logits in condition_logits.items():
                 distortion_video = None if name == "clean" else condition_videos[name]
@@ -257,7 +288,15 @@ def main() -> None:
             "manifest_sha256": sha256(config["paths"]["val_manifest"]),
             "class_map": str(Path(config["paths"]["class_map"]).resolve()),
             "class_map_sha256": sha256(config["paths"]["class_map"]),
-            "text_cache": str(Path(config["paths"]["text_cache"]).resolve()),
+            "target_kind": target_kind,
+            "text_cache": (
+                str(Path(config["paths"]["text_cache"]).resolve())
+                if text is not None else None
+            ),
+            "recognizer_checkpoint": (
+                str(Path(config["paths"]["recognizer_checkpoint"]).resolve())
+                if target_kind == "supervised" else None
+            ),
             "target": config["target"]["name"],
             "source_commit": "3965eef16e2dadd0ea6c8d0cc29c8a3039df52e3",
             "num_frames": int(config["data"]["num_frames"]),
@@ -265,8 +304,8 @@ def main() -> None:
             "sampling": "uniform rounded indices inside annotated [start_time,end_time)",
             "target_resize": "224x224 bicubic antialiased",
             "target_normalization": {"mean": [0.485, 0.456, 0.406], "std": [0.229, 0.224, 0.225]},
-            "text_prefix": "summarize:",
-            "text_max_tokens": 80,
+            "text_prefix": "summarize:" if text is not None else None,
+            "text_max_tokens": 80 if text is not None else None,
             "torch": torch.__version__,
             "device": args.device,
             "gpu": torch.cuda.get_device_name(torch.device(args.device)) if args.device.startswith("cuda") else None,

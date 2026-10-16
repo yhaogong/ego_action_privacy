@@ -42,9 +42,9 @@ InternVideo2-CLIP-1B-224p-f8 动作识别器，再冻结识别器，由 3D/逐�
   参数保持冻结。
 - 真实视频 5-step smoke 已确认生成器参数更新、攻击 margin 总体下降且扰动满足
   `epsilon=8/255`。这些 smoke 数字不构成正式隐私效果结论。
-- 微调识别器已经达到后续隐私实验的 clean 基准要求；将其接入并冻结为 U-Net 的
-  攻击目标是下一步工作。现有 `scripts/train.py` 和 `scripts/evaluate.py` 尚使用原
-  zero-shot class-text logits，不应与 65.420% 的监督分类结果混用。
+- 默认 U-Net 训练与评估已接入上述 `checkpoint_best.pt`；加载时严格核对 278 类数、
+  class map 内容和全部参数 shape，随后冻结视觉主干与分类头。RGB 输入梯度仍穿过
+  识别器回传到生成器。原 665 类扩展配置继续显式使用 zero-shot class-text logits。
 
 默认 278 类官方协议的 train/val 均已完整可用。数据加载仍使用 `valid` 策略：任何
 有效标注缺视频都会拒绝启动，不会把局部数据静默称作“全量”。原 665 类协议仍因
@@ -194,14 +194,14 @@ internvideo2_278_supervised/train_metrics.jsonl
 
 ## U-Net 训练与评估
 
-以下是首版 zero-shot 目标的生成器流程。使用监督微调识别器开展正式隐私实验前，
-必须先将 `checkpoint_best.pt` 接入该流程并冻结全部识别器参数。
+默认配置使用验证 Top-1 65.420% 的监督微调识别器作为攻击目标。识别器 checkpoint
+路径记录在 `paths.recognizer_checkpoint`；训练系统会冻结其全部参数，仅优化 U-Net。
 
 官方 278 类数据上的正式训练（默认拒绝 partial data）：
 
 ```bash
 $PY scripts/train.py --config configs/default.yaml \
-  --run-dir /data2/yhao/outputs/ego_action_privacy/official_278/runs/unet3d_eps8
+  --run-dir /data2/yhao/outputs/ego_action_privacy/official_278/runs/unet3d_eps8_supervised
 ```
 
 中断后可追加 `--resume /path/to/checkpoint.pt`；恢复时会严格检查生成器结构配置，
@@ -219,7 +219,7 @@ clean baseline：
 
 ```bash
 $PY scripts/evaluate.py --config configs/default.yaml \
-  --output-dir /data2/yhao/outputs/ego_action_privacy/official_278/baseline/clean_valid_val
+  --output-dir /data2/yhao/outputs/ego_action_privacy/official_278/baseline/supervised_clean_valid_val
 ```
 
 保护视频、clean 和同预算随机噪声三方比较：
@@ -227,7 +227,7 @@ $PY scripts/evaluate.py --config configs/default.yaml \
 ```bash
 $PY scripts/evaluate.py --config configs/default.yaml \
   --checkpoint /path/to/checkpoint_final.pt \
-  --output-dir /data2/yhao/outputs/ego_action_privacy/official_278/eval/unet3d_eps8
+  --output-dir /data2/yhao/outputs/ego_action_privacy/official_278/eval/unet3d_eps8_supervised
 ```
 
 输出包括 Top-1/Top-5、真类平均排名、`Linf`、MAE、PSNR、SSIM、扰动帧间差，
