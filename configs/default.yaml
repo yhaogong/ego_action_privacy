@@ -29,6 +29,7 @@ generator:
 
 loss:
   attack: 1.0
+  pixel: 0.05
   magnitude: 0.05
   temporal: 0.1
   spatial_tv: 0.0

@@ -31,7 +31,7 @@ wandb/
 
 # Local development helpers
 tests/
-scripts/
+#scripts/
 
 # IDE
 .vscode/

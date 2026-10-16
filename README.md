@@ -58,8 +58,14 @@ InternVideo2-CLIP-1B-224p-f8 动作识别器，再冻结识别器，由 3D/逐�
 clean video -> U-Net -> epsilon*tanh(raw perturbation)
             -> clip(clean + delta, 0, 1)
             -> frozen fine-tuned InternVideo2 -> 278 supervised logits
-            -> untargeted margin + magnitude + temporal + optional spatial-TV
+            -> untargeted margin + actual-pixel MSE + magnitude + temporal
+               + optional spatial-TV
 ```
+
+实际像素损失直接计算裁剪后保护视频与 clean 视频的
+`MSE(protected, clean)`；扰动幅度损失 `mean(delta^2)` 仍单独保留，用于抑制因
+像素裁剪而未反映在最终画面差异中的冗余扰动。两项权重分别由
+`loss.pixel` 和 `loss.magnitude` 控制。
 
 `generator.temporal_mode: 3d` 使用只在空间降采样的 3D U-Net；改为
 `framewise` 会对每帧独立应用共享 2D U-Net，是时间模块消融。时序损失权重可设为
