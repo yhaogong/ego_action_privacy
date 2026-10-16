@@ -1,0 +1,34 @@
+paths:
+  train_manifest: /data2/yhao/outputs/ego_action_privacy/official_278/manifests/keystep_train.json
+  val_manifest: /data2/yhao/outputs/ego_action_privacy/official_278/manifests/keystep_val.json
+  class_map: /data2/yhao/outputs/ego_action_privacy/official_278/manifests/class_map.json
+  model_dir: /data2/yhao/models/InternVideo2-CLIP-1B
+  text_cache: /data2/yhao/outputs/ego_action_privacy/official_278/cache/keystep_278_text_features.pt
+
+data:
+  num_classes: 278
+  num_frames: 8
+  image_size: 224
+  batch_size_per_gpu: 1
+  num_workers_per_gpu: 8
+
+model:
+  parameter_dtype: float32
+  compute_dtype: bfloat16
+  gradient_checkpointing: true
+  head_dropout: 0.0
+  initialize_head_from_text: true
+
+train:
+  seed: 20261015
+  epochs: 5
+  accumulation_steps: 4
+  backbone_learning_rate: 0.00001
+  head_learning_rate: 0.001
+  weight_decay: 0.05
+  label_smoothing: 0.1
+  warmup_ratio: 0.05
+  minimum_learning_rate_ratio: 0.01
+  gradient_clip_norm: 1.0
+  log_every_updates: 10
+  checkpoint_every_updates: 500

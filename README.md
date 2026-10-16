@@ -1,9 +1,10 @@
 # Ego Action Privacy
 
-第一视角视频动作隐私保护基线：3D/逐帧 U-Net 生成有界 RGB 扰动，冻结的
-InternVideo2-CLIP-1B-224p-f8 提供输入梯度，只更新扰动生成器。
+第一视角视频动作隐私保护基线：先在官方 Ego-Exo4D 278 类协议上监督微调
+InternVideo2-CLIP-1B-224p-f8 动作识别器，再冻结识别器，由 3D/逐帧 U-Net 生成
+有界 RGB 扰动。
 
-## 当前状态（2026-10-15）
+## 当前状态（2026-10-16）
 
 - 默认协议已切换为官方 Ego-Exo4D Fine-grained Keystep Recognition v2：278 类、
   ego-only，直接沿用官方 baseline 仓库的 `label_id`、train/val 样本与顺序。
@@ -13,6 +14,10 @@ InternVideo2-CLIP-1B-224p-f8 提供输入梯度，只更新扰动生成器。
 - 已缓存 `[278,768]` 文本特征。完整 4,517 条官方验证集的 278-way zero-shot
   clean 基线为 **Top-1 7.239%（327/4,517）**、Top-5 24.972%（1,128/4,517）、
   真类平均排名 30.51。
+- 已完成 InternVideo2 视觉主干和 278 类分类头的 5-epoch 双卡监督微调。分类头从
+  上述文本特征初始化，完整验证集 clean 结果为 **Top-1 65.420%（2,955/4,517）**、
+  **Top-5 90.082%（4,069/4,517）**，验证损失 1.4807。每轮 Top-1 依次为
+  53.133%、60.837%、63.516%、65.353%、65.420%。
 - 原 665 类完整词表协议及结果没有删除，保留在 `configs/full_vocab_665.yaml` 作为
   长尾/开放词表扩展实验；其 Top-1 5.113% 不属于官方 benchmark。
 - 官方下载器当前没有实际下发文档所列的 `label_mapping.csv`；本项目用官方 baseline
@@ -37,6 +42,9 @@ InternVideo2-CLIP-1B-224p-f8 提供输入梯度，只更新扰动生成器。
   参数保持冻结。
 - 真实视频 5-step smoke 已确认生成器参数更新、攻击 margin 总体下降且扰动满足
   `epsilon=8/255`。这些 smoke 数字不构成正式隐私效果结论。
+- 微调识别器已经达到后续隐私实验的 clean 基准要求；将其接入并冻结为 U-Net 的
+  攻击目标是下一步工作。现有 `scripts/train.py` 和 `scripts/evaluate.py` 尚使用原
+  zero-shot class-text logits，不应与 65.420% 的监督分类结果混用。
 
 默认 278 类官方协议的 train/val 均已完整可用。数据加载仍使用 `valid` 策略：任何
 有效标注缺视频都会拒绝启动，不会把局部数据静默称作“全量”。原 665 类协议仍因
@@ -49,7 +57,7 @@ InternVideo2-CLIP-1B-224p-f8 提供输入梯度，只更新扰动生成器。
 ```text
 clean video -> U-Net -> epsilon*tanh(raw perturbation)
             -> clip(clean + delta, 0, 1)
-            -> frozen InternVideo2-CLIP -> 278 class-text logits
+            -> frozen fine-tuned InternVideo2 -> 278 supervised logits
             -> untargeted margin + magnitude + temporal + optional spatial-TV
 ```
 
@@ -147,7 +155,41 @@ $PY scripts/smoke_target.py \
 生成器的工作分辨率由 `data.image_size` 控制，首版为 224；数据层只做 RGB resize，
 不做 ImageNet 归一化，因而不会与目标 wrapper 重复归一化。
 
-## 训练与评估
+## 278 类识别器监督微调
+
+配置见 [configs/recognizer_finetune.yaml](configs/recognizer_finetune.yaml)。默认使用
+两张 GPU、每卡 batch 1、梯度累积 4 次，有效 batch size 为 8；FP32 主权重配合
+BF16 计算和视觉主干梯度检查点。分类头从 zero-shot 文本特征初始化，以保持微调前
+logits 与原 clean baseline 一致。
+
+```bash
+PYTHONPATH=src /data2/yhao/projects/ego_privacy/py310/bin/torchrun \
+  --standalone --nproc_per_node=2 scripts/finetune_recognizer.py \
+  --config configs/recognizer_finetune.yaml \
+  --run-dir /data2/yhao/outputs/ego_action_privacy/official_278/runs/internvideo2_278_supervised
+```
+
+训练覆盖完整 train 14,326 条和 val 4,517 条，共 5 epochs、8,955 次优化更新，耗时
+约 2 小时 46 分钟。运行目录中的 `checkpoint_latest.pt` 保存模型、优化器和学习率
+调度器，可通过 `--resume` 恢复；`checkpoint_best.pt` 是按验证 Top-1 选择的最佳模型。
+检查点和数据均不提交 Git。
+
+实时查看指标：
+
+```bash
+tail -f /data2/yhao/outputs/ego_action_privacy/official_278/runs/\
+internvideo2_278_supervised/train_metrics.jsonl
+```
+
+| 模型状态 | Val Top-1 | Val Top-5 | Val loss |
+| --- | ---: | ---: | ---: |
+| zero-shot clean | 7.239% | 24.972% | — |
+| supervised fine-tuned clean | **65.420%** | **90.082%** | 1.4807 |
+
+## U-Net 训练与评估
+
+以下是首版 zero-shot 目标的生成器流程。使用监督微调识别器开展正式隐私实验前，
+必须先将 `checkpoint_best.pt` 接入该流程并冻结全部识别器参数。
 
 官方 278 类数据上的正式训练（默认拒绝 partial data）：
 
@@ -196,6 +238,7 @@ PYTHONPATH=src $PY -m pytest -q
 ```
 
 测试覆盖原始与官方类别映射、官方行的精确连接、显式 partial-data 策略、采样边界、
-U-Net 两种模式、预算、损失、冻结目标梯度和文本缓存与 class map 的绑定。
+U-Net 两种模式、预算、损失、冻结目标梯度、文本缓存与 class map 的绑定，以及监督
+分类头初始化与 zero-shot logits 的一致性。
 InternVideo2 派生代码的许可与修改说明见 `LICENSE-InternVideo` 和
 `NOTICE-InternVideo`。

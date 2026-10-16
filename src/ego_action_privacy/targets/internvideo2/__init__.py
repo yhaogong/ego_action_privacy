@@ -1,3 +1,3 @@
-from .adapter import InternVideo2CLIP
+from .adapter import InternVideo2CLIP, InternVideo2Classifier
 
-__all__ = ["InternVideo2CLIP"]
+__all__ = ["InternVideo2CLIP", "InternVideo2Classifier"]

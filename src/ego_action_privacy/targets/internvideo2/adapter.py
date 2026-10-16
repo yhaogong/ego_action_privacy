@@ -355,3 +355,99 @@ class InternVideo2CLIP(nn.Module):
         video_features = self.encode_video(video)
         text_features = F.normalize(text_features.to(video_features).float(), dim=-1)
         return video_features @ text_features.T / self.temperature.float()
+
+
+class InternVideo2Classifier(nn.Module):
+    """Trainable supervised classifier initialized from InternVideo2-CLIP.
+
+    The visual encoder is loaded with exactly the same Stage2 and CLIP overlay
+    weights as :class:`InternVideo2CLIP`.  Keeping normalized visual features
+    lets a text-feature initialized linear head reproduce the zero-shot logits
+    before the first optimizer update.
+    """
+
+    def __init__(
+        self,
+        model_dir,
+        num_classes: int,
+        *,
+        device="cuda",
+        parameter_dtype=torch.float32,
+        gradient_checkpointing=True,
+        head_dropout: float = 0.0,
+    ):
+        super().__init__()
+        if num_classes < 2:
+            raise ValueError("num_classes must be at least two")
+        if not 0.0 <= head_dropout < 1.0:
+            raise ValueError("head_dropout must be in [0, 1)")
+        loaded = InternVideo2CLIP(
+            model_dir,
+            device=device,
+            dtype=parameter_dtype,
+            gradient_checkpointing=gradient_checkpointing,
+            load_text_encoder=False,
+        )
+        vision_encoder = loaded.vision_encoder
+        del loaded.vision_encoder
+        self.vision_encoder = vision_encoder
+        self.vision_encoder.requires_grad_(True)
+        self.num_frames = loaded.num_frames
+        self.image_size = loaded.image_size
+        self.embedding_dim = loaded.embedding_dim
+        self.num_classes = int(num_classes)
+        self.load_report = loaded.load_report
+        self.pretrained_temperature = float(loaded.temperature.float().item())
+        self.register_buffer("rgb_mean", loaded.rgb_mean.detach().clone())
+        self.register_buffer("rgb_std", loaded.rgb_std.detach().clone())
+        self.head_dropout = nn.Dropout(head_dropout)
+        self.classifier = nn.Linear(self.embedding_dim, self.num_classes, bias=True)
+        self.classifier.to(device=device, dtype=parameter_dtype)
+        del loaded
+
+    @torch.no_grad()
+    def initialize_classifier(self, text_features: torch.Tensor) -> None:
+        if text_features.shape != (self.num_classes, self.embedding_dim):
+            raise ValueError(
+                "Expected text features with shape "
+                f"({self.num_classes}, {self.embedding_dim}), received {tuple(text_features.shape)}"
+            )
+        if not torch.isfinite(text_features).all():
+            raise ValueError("Text features contain NaN/Inf")
+        weights = F.normalize(text_features.float(), dim=-1) / self.pretrained_temperature
+        self.classifier.weight.copy_(weights.to(self.classifier.weight))
+        self.classifier.bias.zero_()
+
+    def preprocess(self, video: torch.Tensor) -> torch.Tensor:
+        if video.ndim != 5 or video.shape[1:3] != (self.num_frames, 3):
+            raise ValueError(
+                f"Expected [B,{self.num_frames},3,H,W], received {tuple(video.shape)}"
+            )
+        if video.dtype == torch.uint8:
+            video = video.float() / 255.0
+        elif not video.is_floating_point():
+            raise TypeError("Video must be uint8 or floating-point RGB in [0,1]")
+        if not torch.isfinite(video).all().item():
+            raise ValueError("Video contains NaN/Inf")
+        lo, hi = video.detach().aminmax()
+        if lo.item() < 0 or hi.item() > 1:
+            raise ValueError("Float video must be in [0,1]; normalize only inside this wrapper")
+        video = video.to(device=self.rgb_mean.device, dtype=torch.float32)
+        batch, frames, channels, height, width = video.shape
+        if (height, width) != (self.image_size, self.image_size):
+            video = F.interpolate(
+                video.reshape(batch * frames, channels, height, width),
+                size=(self.image_size, self.image_size),
+                mode="bicubic",
+                align_corners=False,
+                antialias=True,
+            ).reshape(batch, frames, channels, self.image_size, self.image_size)
+        video = (video - self.rgb_mean.float()) / self.rgb_std.float()
+        return video.permute(0, 2, 1, 3, 4).contiguous()
+
+    def encode_video(self, video: torch.Tensor) -> torch.Tensor:
+        features = self.vision_encoder(self.preprocess(video), use_image=False)
+        return F.normalize(features.float(), dim=-1)
+
+    def forward(self, video: torch.Tensor) -> torch.Tensor:
+        return self.classifier(self.head_dropout(self.encode_video(video)))
